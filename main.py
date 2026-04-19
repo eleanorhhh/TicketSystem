@@ -149,6 +149,56 @@ class TicketGrabber:
         except Exception as e:
             self._update_status(f"Error during execution: {str(e)}", "error")
             return False
+    
+    def auto_click_area(self, area_keyword=""):
+        """
+        自動尋找並點擊指定區域
+        """
+        try:
+            if not area_keyword:
+                self._update_status("未設定區域關鍵字，請手動點擊區域", "info")
+                return True # 沒有設定關鍵字，直接回傳 True 進入下一階段等待
+
+            self._update_status(f"🎯 正在極速掃描區域: '{area_keyword}'...", "info")
+            self.stop_search = False
+
+            start_time = time.perf_counter()
+            end_time = time.time() + 5  # 給它 5 秒鐘找區域
+
+            while time.time() < end_time:
+                if self.stop_search: return False
+                
+                try:
+                    # 使用 PARTIAL_LINK_TEXT 尋找包含關鍵字的超連結 (最快也最準)
+                    try:
+                        area_btn = self.driver.find_element(By.PARTIAL_LINK_TEXT, area_keyword)
+                    except NoSuchElementException:
+                        # 備用方案：用 XPath 找任何包含該文字的可點擊元素
+                        xpath = f"//*[contains(text(), '{area_keyword}') and not(contains(@class, 'sold-out'))]"
+                        area_btn = self.driver.find_element(By.XPATH, xpath)
+
+                    # 嘗試抓網址直接跳轉
+                    target_url = area_btn.get_attribute("href")
+                    if target_url and "javascript" not in target_url:
+                        self.driver.execute_script(f"window.location.href='{target_url}';")
+                    else:
+                        # 用 JS 點擊
+                        self.driver.execute_script("arguments[0].click();", area_btn)
+
+                    elapsed = time.perf_counter() - start_time
+                    self._update_status(f"⚡ 成功狙擊區域 '{area_keyword}'！耗時: {elapsed:.4f} 秒", "success")
+                    return True
+
+                except NoSuchElementException:
+                    time.sleep(0.05) # 找不到就等 0.05 秒再找一次
+
+            self._update_status(f"⚠️ 找不到區域 '{area_keyword}' (可能已售完)，請手動點選其他區域！", "error")
+            return True # 找不到不中斷程式，回傳 True 讓程式繼續監聽 checkbox，等你手動救援
+
+        except Exception as e:
+            self._update_status(f"點擊區域發生異常: {str(e)}，請手動點選", "error")
+            return True # 發生錯誤一樣不中斷
+    
     def auto_fill_checking_page(self, ticket_count="2"):
         """
         自動填寫確認頁面（張數、勾選同意，並綁定 Enter 送出）
@@ -355,6 +405,18 @@ class TicketGrabberGUI:
         self.qty_entry.pack(side=tk.LEFT, padx=10)
         self.qty_entry.insert(0, "1") 
         # -------------------------
+        
+        # --- 新增：區域關鍵字設定區塊 ---
+        area_frame = tk.Frame(self.root, pady=5)
+        area_frame.pack(fill=tk.X, padx=20)
+        
+        area_label = tk.Label(area_frame, text="Area Keyword (區域關鍵字，如 '紫2C'):", font=self.default_font)
+        area_label.pack(side=tk.LEFT)
+        
+        self.area_entry = tk.Entry(area_frame, font=self.default_font, width=15)
+        self.area_entry.pack(side=tk.LEFT, padx=10)
+        self.area_entry.insert(0, "") # 預設留空，留空代表全手動
+        # -------------------------
 
         button_frame = tk.Frame(self.root, pady=10)
         button_frame.pack(fill=tk.X, padx=20)
@@ -479,9 +541,11 @@ class TicketGrabberGUI:
                 ticket_qty = self.qty_entry.get().strip()
                 if not ticket_qty:
                     ticket_qty = "2"
+                area_keyword = self.area_entry.get().strip()
+                
             except AttributeError:
                 ticket_qty = "2"
-
+                area_keyword = ""
             # 1. 執行第一階段 (跳轉與點擊)
             success = self.grabber.run_first_stage()
             
@@ -489,6 +553,8 @@ class TicketGrabberGUI:
                 # 記錄第一階段跳轉的耗時
                 stage1_time = time.perf_counter() - total_start_time
                 self._status_callback(f"⏱️ 跳過詳情頁並進入選區，耗時: {stage1_time:.4f} 秒", "info")
+                
+                self.grabber.auto_click_area(area_keyword)
                 
                 # 2. 啟動自動偵測填寫功能
                 fill_success = self.grabber.auto_fill_checking_page(ticket_count=ticket_qty)
